@@ -13,10 +13,12 @@ def init_b(embed_dim, in_dim):
 
 
 class GNM_Module(nn.Module):
-    def __init__(self, in_dim, embed_dim, activation):
+    def __init__(self, in_dim, embed_dim, activation, beta=True):
         super().__init__()
-
-        self.beta = nn.Parameter(torch.rand(1), requires_grad=True)
+        if beta:
+            self.beta = nn.Parameter(torch.rand(1), requires_grad=True)
+        else: 
+            self.beta = None
         self.W = nn.Parameter(init_W(embed_dim, in_dim), requires_grad=True)
         self.b = nn.Parameter(init_b(embed_dim, in_dim), requires_grad=True)
         self.act = activation()
@@ -24,7 +26,10 @@ class GNM_Module(nn.Module):
     def forward(self, x):
 
         z = F.linear(x, weight = self.W, bias=self.b)
-        z = self.act(z * F.softplus(self.beta))
+        if self.beta is None:
+            z = self.act(z)
+        else:
+            z = self.act(z * F.softplus(self.beta))
         z = F.linear(z, weight=self.W.T)
         
         #J = F.softplus(self.beta) * self.W.T @ J_sigma @ self.W
@@ -72,4 +77,29 @@ class GradNet_M(nn.Module):
             z += self.alpha[i] * out
         logdet = torch.linalg.slogdet(J).logabsdet
         z += self.bias
+        return z, logdet
+
+
+
+class bmGradNet_M(nn.Module):
+    def __init__(self, num_modules, in_dim, embed_dim):
+        super().__init__()
+
+        self.num_modules = num_modules
+        # must enforce constraints on W during training.
+        self.mmgn_modules = nn.ModuleList([GNM_Module(in_dim, embed_dim, lambda : nn.Softmax(dim=-1), beta= False) for i in range(num_modules)])
+        self.alpha = nn.Parameter(torch.rand(num_modules,), requires_grad=True)
+        #self.bias = nn.Parameter(init_b(in_dim, embed_dim), requires_grad=True)
+
+    def forward(self, x):
+        theta = F.softmax(self.alpha)
+        z = 0
+        J = 0
+        for i in range(self.num_modules):
+            out = self.mmgn_modules[i](x)
+            J_i = torch.func.vmap(torch.func.jacfwd(self.mmgn_modules[i]))(x)
+            J += J_i * theta[i]
+            z += theta[i] * out
+        logdet = torch.logdet(J)
+        #z += self.bias
         return z, logdet
